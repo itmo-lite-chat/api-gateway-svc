@@ -17,9 +17,11 @@ type Client struct {
 
 type Message struct {
 	ID        string
+	ChatID    string
 	SenderID  string
 	Text      string
 	Timestamp time.Time
+	UpdatedAt *time.Time
 }
 
 func NewClient(addr string) (*Client, error) {
@@ -71,6 +73,30 @@ func (c *Client) History(ctx context.Context, chatID string) ([]Message, error) 
 	return messages, nil
 }
 
+func (c *Client) Edit(ctx context.Context, messageID int64, senderID, text string) (Message, error) {
+	resp, err := c.client.EditMessage(ctx, &pb.EditMessageRequest{
+		MessageId: messageID,
+		SenderId:  senderID,
+		Content: &pb.Content{
+			Type: pb.ContentType_CONTENT_TYPE_TEXT,
+			Body: text,
+		},
+	})
+	if err != nil {
+		return Message{}, err
+	}
+
+	return fromProto(resp.GetMessage()), nil
+}
+
+func (c *Client) Delete(ctx context.Context, messageID int64, userID string) error {
+	_, err := c.client.DeleteMessage(ctx, &pb.DeleteMessageRequest{
+		MessageId: messageID,
+		UserId:    userID,
+	})
+	return err
+}
+
 func fromProto(msg *pb.Message) Message {
 	if msg == nil {
 		return Message{}
@@ -81,10 +107,18 @@ func fromProto(msg *pb.Message) Message {
 		timestamp = msg.GetCreatedAt().AsTime()
 	}
 
+	var updatedAt *time.Time
+	if msg.GetUpdatedAt() != nil {
+		value := msg.GetUpdatedAt().AsTime()
+		updatedAt = &value
+	}
+
 	return Message{
 		ID:        strconv.FormatInt(msg.GetMessageId(), 10),
+		ChatID:    msg.GetChatId(),
 		SenderID:  msg.GetSenderId(),
 		Text:      msg.GetContent().GetBody(),
 		Timestamp: timestamp,
+		UpdatedAt: updatedAt,
 	}
 }

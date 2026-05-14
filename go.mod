@@ -3,8 +3,7 @@ module github.com/itmo-lite-chat/api-gateway-svc
 go 1.25.5
 
 require (
-	github.com/google/uuid v1.6.0
-	github.com/itmo-lite-chat/proto-registry v1.1.0
+	github.com/itmo-lite-chat/proto-registry v1.1.1
 	google.golang.org/grpc v1.79.1
 )
 
