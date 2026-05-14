@@ -1,23 +1,27 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/itmo-lite-chat/api-gateway-svc/internal/chats"
 	"github.com/itmo-lite-chat/api-gateway-svc/internal/domain"
 	"github.com/itmo-lite-chat/api-gateway-svc/internal/messages"
-	"github.com/itmo-lite-chat/api-gateway-svc/internal/store"
+	"github.com/itmo-lite-chat/api-gateway-svc/internal/users"
 )
 
 type Handler struct {
-	store    *store.Store
-	messages *messages.Client
+	messages   *messages.Client
+	users      *users.Client
+	chatClient *chats.Client
 }
 
-func NewHandler(store *store.Store, messages *messages.Client) *Handler {
-	return &Handler{store: store, messages: messages}
+func NewHandler(messages *messages.Client, users *users.Client, chats *chats.Client) *Handler {
+	return &Handler{messages: messages, users: users, chatClient: chats}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -50,8 +54,8 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, ok := h.store.Login(req.Username, req.Password)
-	if !ok {
+	user, err := h.users.Login(r.Context(), req.Username, req.Password)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -84,10 +88,15 @@ func (h *Handler) chats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chats := h.store.ListChats(user)
-	resp := make([]domain.Chat, 0, len(chats))
-	for _, chat := range chats {
-		resp = append(resp, h.toHTTPChat(chat, user))
+	userChats, err := h.chatClient.List(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	resp := make([]domain.Chat, 0, len(userChats))
+	for _, chat := range userChats {
+		resp = append(resp, h.toHTTPChat(r.Context(), chat, user))
 	}
 
 	writeJSON(w, http.StatusOK, map[string][]domain.Chat{"chats": resp})
@@ -112,8 +121,18 @@ func (h *Handler) privateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chat := h.store.GetOrCreatePrivateChat(user, req.Username)
-	writeJSON(w, http.StatusOK, map[string]domain.Chat{"chat": h.toHTTPChat(chat, user)})
+	participant, err := h.users.GetOrCreateByLogin(r.Context(), req.Username)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	chat, err := h.chatClient.GetOrCreatePrivate(r.Context(), user.ID, participant.ID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]domain.Chat{"chat": h.toHTTPChat(r.Context(), chat, user)})
 }
 
 func (h *Handler) chatNested(w http.ResponseWriter, r *http.Request) {
@@ -129,9 +148,19 @@ func (h *Handler) chatNested(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chat, ok := h.store.ChatByID(parts[0])
-	if !ok || !contains(chat.Participants, user.ID) {
+	ok, err := h.chatClient.CheckMember(r.Context(), parts[0], user.ID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !ok {
 		writeError(w, http.StatusNotFound, "chat not found")
+		return
+	}
+
+	chat, err := h.chatClient.Get(r.Context(), parts[0])
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
@@ -184,7 +213,10 @@ func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request, chat domai
 	if timestamp.IsZero() {
 		timestamp = time.Now()
 	}
-	h.store.TouchChat(chat.ID, msg.Text, timestamp)
+	messageID, err := strconv.ParseInt(msg.ID, 10, 64)
+	if err == nil {
+		_ = h.chatClient.TouchLastMessage(r.Context(), chat.ID, messageID, msg.Text)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]domain.Message{"message": {
 		ID:        msg.ID,
@@ -197,23 +229,23 @@ func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request, chat domai
 func (h *Handler) authUser(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
 	auth := r.Header.Get("Authorization")
 	token := strings.TrimPrefix(auth, "Bearer ")
-	user, ok := h.store.UserByToken(token)
-	if !ok {
+	user, err := h.users.ValidateToken(r.Context(), token)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return domain.User{}, false
 	}
 	return user, true
 }
 
-func (h *Handler) toHTTPChat(chat domain.StoredChat, current domain.User) domain.Chat {
+func (h *Handler) toHTTPChat(ctx context.Context, chat domain.StoredChat, current domain.User) domain.Chat {
 	name := "Chat"
 	initials := "C"
 	for _, participantID := range chat.Participants {
 		if participantID == current.ID {
 			continue
 		}
-		user, ok := h.store.UserByID(participantID)
-		if ok {
+		user, err := h.users.GetByID(ctx, participantID)
+		if err == nil {
 			name = user.DisplayName
 			initials = avatarInitials(user.DisplayName)
 		}
