@@ -1,0 +1,59 @@
+services:
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    ports:
+      - "16686:16686" # UI интерфейс (смотреть графики)
+      - "4317:4317"   # gRPC протокол для отправки трейсов
+      - "4318:4318"   # HTTP протокол для отправки трейсов
+
+  postgres:
+    image: postgres:14.10-alpine
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${SQL_USER}
+      POSTGRES_PASSWORD: ${SQL_PASSWORD}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      - ./init-sql.sh:/docker-entrypoint-initdb.d/init-db.sh
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 2s
+      timeout: 1s
+      retries: 5
+      start_period: 1s
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: messenger_messages
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./mongodata:/data/db
+
+  centrifugo:
+    image: centrifugo/centrifugo:latest
+    container_name: centrifugo
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./centrifugo_config.json:/centrifugo/config.json
+    command: centrifugo -c config.json
+    environment:
+      CENTRIFUGO_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_TOKEN_SECRET}
+      CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD}
+      CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET}
+
+  # api-gateway:
+
+  
+volumes:
+  mongodata:
