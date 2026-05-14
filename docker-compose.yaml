@@ -29,3 +29,64 @@ services:
       - "27017:27017"
     volumes:
       - ./mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+
+  users-svc:
+    build:
+      context: ../users-svc
+    environment:
+      GRPC_ADDR: :9991
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
+      TOKEN_SECRET: dev-secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  chats-svc:
+    build:
+      context: ../chats-svc
+    environment:
+      GRPC_ADDR: :9992
+      POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  messages-svc:
+    build:
+      context: ../messages-svc
+    environment:
+      LOG_LEVEL: info
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 9990
+      MONGO_HOST: mongodb
+      MONGO_PORT: 27017
+      MONGO_DB: messenger_messages
+      MONGO_USER: admin
+      MONGO_PASSWORD: admin_password
+      MONGO_MAX_POOL_SIZE: 100
+      MONGO_MIN_POOL_SIZE: 10
+      MONGO_CONN_TIMEOUT: 5s
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+  api-gateway-svc:
+    build:
+      context: .
+    environment:
+      HTTP_ADDR: :8080
+      USERS_GRPC_ADDR: users-svc:9991
+      CHATS_GRPC_ADDR: chats-svc:9992
+      MESSAGES_GRPC_ADDR: messages-svc:9990
+      TOKEN_SECRET: dev-secret
+    ports:
+      - "18080:8080"
+    depends_on:
+      - users-svc
+      - chats-svc
+      - messages-svc

@@ -4,6 +4,16 @@ HTTP API для lite-chat demo.
 
 ## Run
 
+Full dockerized demo:
+
+```bash
+docker compose up --build
+```
+
+HTTP API will be available at `http://localhost:18080`.
+
+Local Go process demo:
+
 ```bash
 docker compose up -d postgres mongodb
 (cd ../users-svc && env $(cat dev/.env.example | xargs) go run ./cmd)
