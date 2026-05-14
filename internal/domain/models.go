@@ -20,15 +20,17 @@ type Chat struct {
 }
 
 type Message struct {
-	ID        string    `json:"id"`
-	SenderID  string    `json:"senderId"`
-	Text      string    `json:"text"`
-	Timestamp time.Time `json:"timestamp"`
+	ID        string     `json:"id"`
+	SenderID  string     `json:"senderId"`
+	Text      string     `json:"text"`
+	Timestamp time.Time  `json:"timestamp"`
+	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
 }
 
 type StoredChat struct {
 	ID            string
 	Participants  []string
+	LastMessageID int64
 	LastMessage   string
 	LastMessageAt time.Time
 }

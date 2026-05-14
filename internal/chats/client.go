@@ -84,6 +84,11 @@ func (c *Client) TouchLastMessage(ctx context.Context, chatID string, messageID 
 	return err
 }
 
+func (c *Client) Delete(ctx context.Context, chatID string) error {
+	_, err := c.client.DeleteChat(ctx, &pb.DeleteChatRequest{ChatId: chatID})
+	return err
+}
+
 func fromProto(chat *pb.Chat, members []*pb.ChatMember) domain.StoredChat {
 	if chat == nil {
 		return domain.StoredChat{}
@@ -104,6 +109,7 @@ func fromProto(chat *pb.Chat, members []*pb.ChatMember) domain.StoredChat {
 	return domain.StoredChat{
 		ID:            chat.GetChatId(),
 		Participants:  participants,
+		LastMessageID: chat.GetLastMessageId(),
 		LastMessage:   chat.GetLastMessagePreview(),
 		LastMessageAt: lastMessageAt,
 	}

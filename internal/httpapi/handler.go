@@ -143,12 +143,13 @@ func (h *Handler) chatNested(w http.ResponseWriter, r *http.Request) {
 
 	path := strings.TrimPrefix(r.URL.Path, "/api/chats/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 2 || parts[1] != "messages" {
+	if len(parts) == 0 || parts[0] == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
-	ok, err := h.chatClient.CheckMember(r.Context(), parts[0], user.ID)
+	chatID := parts[0]
+	ok, err := h.chatClient.CheckMember(r.Context(), chatID, user.ID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -158,9 +159,45 @@ func (h *Handler) chatNested(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chat, err := h.chatClient.Get(r.Context(), parts[0])
+	chat, err := h.chatClient.Get(r.Context(), chatID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	if len(parts) == 1 {
+		if r.Method == http.MethodDelete {
+			h.deleteChat(w, r, chat)
+			return
+		}
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if parts[1] != "messages" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	if len(parts) == 3 {
+		messageID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid message id")
+			return
+		}
+		switch r.Method {
+		case http.MethodPatch:
+			h.editMessage(w, r, chat, user, messageID)
+		case http.MethodDelete:
+			h.deleteMessage(w, r, chat, user, messageID)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
+	if len(parts) != 2 {
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -188,6 +225,7 @@ func (h *Handler) getMessages(w http.ResponseWriter, r *http.Request, chat domai
 			SenderID:  msg.SenderID,
 			Text:      msg.Text,
 			Timestamp: msg.Timestamp,
+			UpdatedAt: msg.UpdatedAt,
 		})
 	}
 
@@ -223,7 +261,98 @@ func (h *Handler) sendMessage(w http.ResponseWriter, r *http.Request, chat domai
 		SenderID:  msg.SenderID,
 		Text:      msg.Text,
 		Timestamp: timestamp,
+		UpdatedAt: msg.UpdatedAt,
 	}})
+}
+
+func (h *Handler) editMessage(w http.ResponseWriter, r *http.Request, chat domain.StoredChat, user domain.User, messageID int64) {
+	if !h.messageExistsInChat(r.Context(), chat.ID, strconv.FormatInt(messageID, 10)) {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+
+	var req struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	msg, err := h.messages.Edit(r.Context(), messageID, user.ID, req.Body)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if msg.ChatID != chat.ID {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if chat.LastMessageID == messageID {
+		_ = h.chatClient.TouchLastMessage(r.Context(), chat.ID, messageID, msg.Text)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]domain.Message{"message": {
+		ID:        msg.ID,
+		SenderID:  msg.SenderID,
+		Text:      msg.Text,
+		Timestamp: msg.Timestamp,
+		UpdatedAt: msg.UpdatedAt,
+	}})
+}
+
+func (h *Handler) deleteMessage(w http.ResponseWriter, r *http.Request, chat domain.StoredChat, user domain.User, messageID int64) {
+	if !h.messageExistsInChat(r.Context(), chat.ID, strconv.FormatInt(messageID, 10)) {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+
+	if err := h.messages.Delete(r.Context(), messageID, user.ID); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if chat.LastMessageID == messageID {
+		h.refreshLastMessage(r.Context(), chat.ID)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) deleteChat(w http.ResponseWriter, r *http.Request, chat domain.StoredChat) {
+	if err := h.chatClient.Delete(r.Context(), chat.ID); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) messageExistsInChat(ctx context.Context, chatID, messageID string) bool {
+	msgs, err := h.messages.History(ctx, chatID)
+	if err != nil {
+		return false
+	}
+	for _, msg := range msgs {
+		if msg.ID == messageID {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) refreshLastMessage(ctx context.Context, chatID string) {
+	msgs, err := h.messages.History(ctx, chatID)
+	if err != nil || len(msgs) == 0 {
+		_ = h.chatClient.TouchLastMessage(ctx, chatID, 0, "")
+		return
+	}
+
+	last := msgs[len(msgs)-1]
+	messageID, err := strconv.ParseInt(last.ID, 10, 64)
+	if err != nil {
+		_ = h.chatClient.TouchLastMessage(ctx, chatID, 0, "")
+		return
+	}
+	_ = h.chatClient.TouchLastMessage(ctx, chatID, messageID, last.Text)
 }
 
 func (h *Handler) authUser(w http.ResponseWriter, r *http.Request) (domain.User, bool) {
@@ -266,7 +395,7 @@ func (h *Handler) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
